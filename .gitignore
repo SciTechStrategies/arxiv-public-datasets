@@ -110,3 +110,5 @@ venv.bak/
 *.pkl
 data
 config.json
+
+arxiv-data
