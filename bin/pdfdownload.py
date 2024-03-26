@@ -30,14 +30,16 @@ def cli(
         manifest_filename, redownload_manifest
     )
     if year:
-        yy = "{:02d}".format(year % 100)
         manifest = [
-            item for item in manifest if item['yymm'].startswith(yy)
+            item for item in manifest if item['timestamp'].startswith(
+                str(year) + '-'
+            )
         ]
         if month:
             mm = "{:02d}".format(month)
             manifest = [
-                item for item in manifest if item['yymm'].endswith(mm)
+                item for item in manifest
+                if item['timestamp'].split('-')[1] == mm
             ]
     s3_bulk_download.download_check_tarfiles(manifest)
 
