@@ -4,3 +4,4 @@ requests==2.20.0
 unicodedata2==11.0.0
 https://github.com/jaepil/pdfminer3k/archive/1.0.4.zip
 pdfminer.six
+refextract==1.1.4
