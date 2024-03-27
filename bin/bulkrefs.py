@@ -5,8 +5,10 @@ import logging
 import os
 import subprocess
 import tempfile
-from concurrent.futures import ProcessPoolExecutor
-from typing import Dict, List
+from concurrent.futures import (
+    ProcessPoolExecutor, ThreadPoolExecutor
+)
+from typing import Dict, List, Optional, Set, TextIO
 
 import click
 import refextract
@@ -23,6 +25,7 @@ logger = logging.getLogger(__name__)
 @click.option('--until-month', type=int, required=True)
 @click.option('--output-base-dir', default='data')
 @click.option('--redownload-manifest', is_flag=True)
+@click.option('--already-downloaded-tars', type=click.File('rt'))
 def cli(
     from_year: int,
     from_month: int,
@@ -30,7 +33,14 @@ def cli(
     until_month: int,
     output_base_dir: str,
     redownload_manifest: bool = False,
+    already_downloaded_tars: Optional[TextIO] = None,
 ):
+    if already_downloaded_tars:
+        already_downloaded = set(
+            line.strip()
+            for line in already_downloaded_tars
+        )
+
     os.makedirs(output_base_dir, exist_ok=True)
     # Get manifest
     manifest_filename = os.path.join(output_base_dir, "manifest.xml")
@@ -49,14 +59,17 @@ def cli(
             month=month,
             output_base_dir=output_base_dir,
             manifest=manifest,
+            already_downloaded=already_downloaded,
         )
 
 
 def extract_refs_for_month(
+    *,
     year: int,
     month: int,
     output_base_dir: str,
     manifest: List[Dict],
+    already_downloaded: Optional[Set[str]] = None,
 ):
     logger.info("Extracting refs for year/month: %d/%d", year, month)
     ym_prefix = "{}-{:02d}".format(year, month)
@@ -66,11 +79,19 @@ def extract_refs_for_month(
         "refs",
     )
     os.makedirs(refs_output_dir, exist_ok=True)
-    for item in manifest:
-        if item['timestamp'].startswith(ym_prefix):
-            extract_refs_for_tarfile(
-                s3_url=item['filename'],
-                output_dir=refs_output_dir,
+    tar_files_to_download = [
+        item['filename'] for item in manifest
+        if (
+            item['timestamp'].startswith(ym_prefix)
+            and item['filename'] not in already_downloaded
+        )
+    ]
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for tar_filename in tar_files_to_download:
+            ex.submit(
+                extract_refs_for_tarfile,
+                tar_filename,
+                refs_output_dir,
             )
 
 
