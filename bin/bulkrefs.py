@@ -6,7 +6,9 @@ import os
 import subprocess
 import tempfile
 from concurrent.futures import (
-    ProcessPoolExecutor, ThreadPoolExecutor
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    as_completed,
 )
 from typing import Dict, List, Optional, Set, TextIO
 
@@ -14,6 +16,9 @@ import click
 import refextract
 
 from arxiv_public_data import s3_bulk_download
+
+EXTRACT_REFS_TIMEOUT_SECONDS = 5 * 60  # How long to wait for ref extraction
+NUM_DOWNLOAD_THREADS = 4  # Number of tars to download in parallel
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +40,10 @@ def cli(
     redownload_manifest: bool = False,
     already_downloaded_tars: Optional[TextIO] = None,
 ):
-    if already_downloaded_tars:
-        already_downloaded = set(
-            line.strip()
-            for line in already_downloaded_tars
-        )
+    already_downloaded = set(
+        line.strip()
+        for line in already_downloaded_tars
+    ) if already_downloaded_tars else set()
 
     os.makedirs(output_base_dir, exist_ok=True)
     # Get manifest
@@ -86,7 +90,7 @@ def extract_refs_for_month(
             and item['filename'] not in already_downloaded
         )
     ]
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=NUM_DOWNLOAD_THREADS) as ex:
         for tar_filename in tar_files_to_download:
             ex.submit(
                 extract_refs_for_tarfile,
@@ -107,12 +111,34 @@ def extract_refs_for_tarfile(
         s3_bulk_download.download_file(s3_url, tar_filename)
         subprocess.run(["tar", "-xvzf", tar_filename, "-C", pdfs_dir])
         with ProcessPoolExecutor() as executor:
-            for pdf_filename in glob.glob("{}/*/*.pdf".format(pdfs_dir)):
+            futures = {
                 executor.submit(
                     extract_refs_for_pdf,
                     pdf_filename,
                     output_dir,
-                )
+                ): pdf_filename
+                for pdf_filename
+                in glob.glob("{}/*/*.pdf".format(pdfs_dir))
+            }
+            completed_futures = set()
+            try:
+                for future in as_completed(
+                    futures, timeout=EXTRACT_REFS_TIMEOUT_SECONDS
+                ):
+                    future.result()
+                    completed_futures.add(future)
+            except TimeoutError:
+                incomplete_futures = set(futures) - completed_futures
+                incomplete_pdfs = [
+                    pdf for future, pdf
+                    in futures.items()
+                    if future in incomplete_futures
+                ]
+                logger.warning("Some pdfs timed out: %s", incomplete_pdfs)
+                for process in executor._processes.values():
+                    process.terminate()
+                executor.shutdown()
+    logger.info("Tarfile extraction complete: %s", s3_url)
 
 
 def extract_refs_for_pdf(pdf_filename: str, output_dir: str):
